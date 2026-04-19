@@ -1,34 +1,46 @@
-# Multi-Agent Workflow Definition & Retrospective 🤖
+# Multi-Agent Workflow & Architectural Decisions Retrospective 🤖
 
-## 1. Project Objective and Workflow Philosophy
-For this project, the goal was to construct a robust, thread-safe Web Crawler and Search Engine using solely native Python libraries. To achieve the rigorous architectural standards required (memory safety, backpressure, lock-free SQLite), we implemented an **AI-Augmented Collaborative Workflow**.
+## 1. Yönetim Felsefesi ve Takım Yapısı
+Bu projeyi, tamamen yerleşik (native) Python kütüphaneleri kullanarak yüksek performanslı bir Web Crawler ve Arama Motoru inşa etmek gibi kısıtlayıcı hedeflerle yönettim. Sistemin mimari sınırlarını (RAM güvenliği, Lock-free veritabanı, asenkronluk) koruyabilmek adına, süreci bir **"Human-in-the-Loop" (İnsan Kontrolünde)** Multi-Agent ekibi tasarlayarak yürüttüm. 
 
-The "Human" (Node Controller) steered the discussion, while multiple distinct AI personas generated solutions, critiqued limitations, and provided comprehensive testing mechanisms. This cooperative AI discourse shaped the entire `crawl -> index -> search` ecosystem before any code was written.
+Bu kurguda ben **Node Controller (Proje Lideri ve Mimar)** olarak kararları veren kişi oldum. Altımdaki AI (Yapay Zeka) ajanları ise uzmanlık alanlarına göre bana öneriler sunan, yazdığım kuralları tartışan teknik ekibim olarak görev aldı.
 
-## 2. Agent Personas & Responsibilities
+## 2. Takımım (Agent Personaları)
 
-### 👷‍♂️ @SystemArchitect (Lead Engineer)
-* **Responsibility:** Designed the core asynchronous multi-threading architecture.
-* **Contributions:** Proposed the `WAL mode` configuration for SQLite, established the global `queue.Queue` maxsize limitations to enforce Backpressure, and engineered the "Single DB Writer Thread" proxy pattern to bypass the notorious SQLite database-is-locked limitation.
+*   **👷‍♂️ @SystemArchitect (Sistem Mühendisi):** Çekirdek asenkron multi-threading mimarisinin taslaklarını hazırladı. Taleplerim doğrultusunda SQLite WAL modunu ve Queue havuzlarını projelendirdi.
+*   **🦹‍♂️ @Challenger (Kritik Analiz / Red Team):** Architect'in bana sunduğu planlardaki güvenlik açıklarını, Memory Leak (Bellek sızıntısı) ve Deadlock (Kilitlenme) risklerini analiz etmekle görevlendirdiğim ajan.
+*   **🕸️ @CrawlerSpecialist (Veri & Ağ Uzmanı):** Benim koyduğum katı kurallar çerçevesinde HTML ayrıştırma (Parser) sistemini dış kütüphane olmadan (urllib ve html.parser) yazmakla görevli mühendisim.
+*   **🔎 @SearchSpecialist (Algoritma Uzmanı):** Gelen verilerin kullanıcı aramasında saniyeler içinde Skorlanarak (Title ve Depth ağırlıklı) getirilmesi logiğini tasarladı.
+*   **🎨 @UISpecialist (Arayüz Geliştirici):** CLI'dan çıkıp sistemi bir HTML Dashboard'a taşımasını emrettiğim, Native `http.server` üzerinden asenkron UI bağlayan uzmanım.
 
-### 🦹‍♂️ @Challenger (Red Team Critic)
-* **Responsibility:** Vulnerability probing and edge-case testing of the Architect's proposals.
-* **Contributions:** Pointed out a systemic Deadlock flaw if thread locks were held during queue operations. Warned against the massive out-of-memory overhead of keeping a Python `set()` for visited URLs. Championed the pivot to offloading Deduplication onto SQLite's `UNIQUE` constraint schema using `INSERT OR IGNORE`. Formatted strict adherence to network timeouts within `urllib` to prevent thread starvation globally.
+---
 
-### 🧪 @TestEngineer (Quality Assurance)
-* **Responsibility:** Defined the stress testing standards.
-* **Contributions:** Developed logic proofs for validating Queue Bottlenecks and verifying the DB deduplication success rate under the pressure of 50 simultaneous identical spider requests.
+## 3. Ekibimle Aldığımız Kritik Mimari Kararlar
 
-### 🔎 @SearchSpecialist & 🕸️ @CrawlerSpecialist
-* **Responsibility:** Core algorithm implementation.
-* **Contributions:** The Crawler agent meticulously structured a native `html.parser` extending ignoring `<script>` and `<style>` blocks, and sanitizing absolute URLs. The Search agent engineered the in-memory tuple calculation scoring `(title-matches * 10) + (content-matches * 1)` while actively executing concurrent non-blocking reads relying on the WAL journal mode.
+Proje boyunca karşılaştığımız büyük teknik darboğazları, ekibimle tartışarak şu kararlarla çözdüm:
 
-### 🎨 @UISpecialist (Visibility Engineer)
-* **Responsibility:** Built the native dashboard interface.
-* **Contributions:** Built a zero-dependency HTML dashboard on `http.server`. Hooked an asynchronous Javascript `fetch()` engine to pull `api/metrics` and `api/search` queries. This allowed the human user to initiate Deep Web Seed Crawls, track "Recently Indexed" URLs, and fire search terms seamlessly while crawler processes run asynchronously in the background.
+### Karar 1: RAM Şişmesini (OOM) Önleme ve Deduplikasyon
+*   **Sorun:** Milyonlarca tekil URL'in aynı siteyi tekrar taramaması için (Visited List) hafızada tutulması gerekiyordu.
+*   **Ekip İçi Tartışma:** @SystemArchitect bu listeyi Python `set()` olarak RAM'de tutmayı önerdi. Ancak @Challenger bunun donanım limitlerimi zorlayacağını ve Out-Of-Memory (OOM) hatası verdireceğini savundu. 
+*   **Aldığım Karar:** Sistemin RAM şişirmesine asla izin veremezdim. Bu yüzden **OOM Riskini göze almaktansa bant genişliğini feda etme** kararı aldım. Deduplikasyon yükünü tamamen RAM'den alıp SQLite'ın `UNIQUE` kısıtına (`INSERT OR IGNORE`) yıktım. Böylece RAM tüketimi neredeyse sıfıra indi.
 
-## 3. Decision Matrix & Iteration History
-1. The **SystemArchitect** proposed an initial memory-based deduplication hash-map.
-2. The **Challenger** rejected it due to OOM constraints strictly adhering to the "Native Only" environment limits.
-3. The **Human Controller** reviewed the debate, finalizing the architecture: Drop the memory map, utilize Queue `timeout` mechanics, enforce a DB Writer Proxy, and utilize SQLite indexes for uniqueness.
-4. **Iterative Build Phase:** Files (`database.py`, `crawler.py`, `dashboard.py`, `search.py`, `main.py`) were sequentially scripted, rigorously checking back to the multi-agent constraints before execution.
+### Karar 2: "Database is Locked" Hatasını Aşmak (Single DB Writer)
+*   **Sorun:** 16 farklı Spider (Örümcek) aynı anda veritabanına kayıt atmaya çalıştığında SQLite'in meşhur kilitlenme problemleri başladı.
+*   **Aldığım Karar:** Thread'lerin (Örümceklerin) veritabanına doğrudan yazmasını kesin yolla YASAKLADIM. Bunun yerine "Single DB Writer Proxy" adında tek bir thread oluşturdum. Bütün örümceklerin getirdiği veriler `db_write_queue` havuzuna düşürülüyor; Writer ise bu paketleri 50'şerli gruplar (Batch) halinde `executemany` ile hızlıca diske döküyor. 
+
+### Karar 3: Backpressure (Geri Basınç) Frenlemesi
+*   **Sorun:** Spiders'ın DB_Writer'dan daha hızlı veri çekerek kuyruk hafızasını (Queue) patlatma ihtimali vardı.
+*   **Aldığım Karar:** Sisteme kendiliğinden çalışan bir Backpressure zorunluluğu getirdim. Hafıza kuyruklarına (Queue) katı `maxsize` değerleri bağlattım ve kuyruk dolarsa Thread'lerin "Timeout" süresince zorunlu beklemeye geçerek yazarın nefes almasını sağlamasını emrettim.
+
+### Karar 4: Arama Motoru Skorer Logiği (Relevancy Heuristic)
+*   **Sorun:** Basit bir LIKE araması sonuçların kalitesini çok düşürüyordu. Elasticsearch gibi dış araçlar da yasaktı.
+*   **Aldığım Karar:** @SearchSpecialist'e özel bir puanlama kurgusu implement etmesini söyledim:
+    1. Aranan kelime sayfa başlığında (Title) geçiyorsa **(x10 Puan)**
+    2. Gövdede (Content) geçiyorsa frekansı kadar **(x1 Puan)**
+    3. Derinlik Cezası (Depth Penalty): Ana domaine yakınlık değeri; nihai skor **(Depth+1)** değerine bölünerek orijinal kaynaklar öne taşınır.
+
+---
+
+## 4. Sonuç & Retrospektif
+
+Bu Multi-Agent Workflow senaryosunda, saf bir Python kütüphanesi ortamında kurduğumuz bu takım çalışması inanılmaz sonuçlar verdi. Kurduğum katı kısıtlamalar (Single Node, Native Libs) neticesinde, @Challenger ajanımın felaket senaryoları tasarlaması beni en sağlam mimariyi (`WAL Mode`, `Single Writer Proxy`, `OOM Constraints`) ayağa kaldırmaya mecbur bıraktı. Mükemmel optimize edilmiş ve stabil bir Arama Motoru & Tarayıcı (Crawler) ekosistemini projeye teslim etmiş olduk.
